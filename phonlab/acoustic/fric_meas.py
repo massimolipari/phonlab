@@ -52,16 +52,16 @@ def bark2hz(bark):
 
 
 FricMeas = namedtuple('FricMeas', [
-    'Fm', 'Am', 'AmpD', 'Fsec', 'Asec', 'mode',
+    'Fm', 'Am', 'Fmin', 'Amin', 'AmpD', 'Fsec', 'Asec', 'mode',
     'COG', 'SD', 'Skew', 'Kurtosis', 'spec', 'freq'
 ])
 
-def _measure(spec, freq, fspace):
+def _measure(spec, freq, fspace, min_freq=300, dB_moments=True):
     """Find the main spectral peaks and compute the spectral moments of a fricative spectrum.
 
-    `spec` is the spectrum in dB, `freq` its frequency axis (Hz), and `fspace` the frequency spacing (Hz per point) used to map from frequency to array index.  Returns a `FricMeas` namedtuple.
+    `spec` is the spectrum in dB, `freq` its frequency axis (Hz), `fspace` the frequency spacing (Hz per point) used to map from frequency to array index, and `min_freq` is the minimum frequency to use in the analysis. Returns a `FricMeas` namedtuple.
     """
-    bottom_freq = int(300/fspace)  # bottom of the search space (in points in the array)
+    bottom_freq = int(min_freq/fspace)  # bottom of the search space (in points in the array)
     top_freq = int(16000/fspace)  # set frequency range for analysis -- up to 16kHz for peaks (11kHz for moments),
     top_freq = min(top_freq, len(freq))  # but never beyond the Nyquist freq (1/2 the sampling rate)
     spec_chunk = spec[bottom_freq:top_freq]
@@ -89,7 +89,11 @@ def _measure(spec, freq, fspace):
     index_of_main_peak = bottom_freq + peaks[0]  # this is selecting the first peak in an array of peaks
     Fm = freq[index_of_main_peak]      # convert to Hz
     Am = spec[index_of_main_peak]      # get amplitude
-    AmpD = Am - np.min(spec[bottom_freq:index_of_main_peak])
+
+    index_of_min = bottom_freq + np.argmin(spec[bottom_freq:index_of_main_peak])
+    Fmin = freq[index_of_min]
+    Amin = spec[index_of_min]
+    AmpD = Am - Amin
 
     Fsec = np.nan
     Asec = np.nan
@@ -97,10 +101,17 @@ def _measure(spec, freq, fspace):
         index_of_second_peak = bottom_freq + peaks[1]
         Fsec = freq[index_of_second_peak]
         Asec = spec[index_of_second_peak]
-        if Asec>Am: AmpD = Asec - np.min(spec[bottom_freq:index_of_main_peak])
+        if Asec>Am: AmpD = Asec - Amin
+
+    index_of_overall_peak = bottom_freq + np.argmax(spec[bottom_freq:top_freq])
+    Fpeak = freq[index_of_overall_peak]
+    Apeak = spec[index_of_overall_peak]
 
     # -------- moments analysis -----------------------
-    bottom_freq = int(300/fspace)
+    if dB_moments is False:
+        spec = 10 ** (spec/10) # convert back to PSD
+
+    bottom_freq = int(min_freq/fspace)
     top_freq = int(11000/fspace)  # set frequency range for the moments analysis -- 11kHz,
     top_freq = min(top_freq, len(freq))  # but never beyond the Nyquist freq (1/2 the sampling rate)
     f = freq[bottom_freq:top_freq] 
@@ -118,19 +129,19 @@ def _measure(spec, freq, fspace):
     Kurtosis = Kurtosis/(Var**2) - 3
     
     return FricMeas(
-        Fm=Fm, Am=Am, AmpD=AmpD, Fsec=Fsec, Asec=Asec, mode=mode,
-        COG=COG, SD=SD, Skew=Skew, Kurtosis=Kurtosis, spec=spec, freq=freq
+        Fm=Fm, Am=Am, Fmin=Fmin, Amin=Amin, AmpD=AmpD, Fsec=Fsec, Asec=Asec, mode=mode,
+        Fpeak=Fpeak, Apeak=Apeak, COG=COG, SD=SD, Skew=Skew, Kurtosis=Kurtosis, spec=spec, freq=freq
     )
 
 
-def fricative(x,fs,t,w=0.02,NW=4,order=12):
+def fricative(x,fs,t,w=0.02,NW=4,order=12,scale='nitime',min_freq=300,dB_moments=True):
     """
     Measure fricative acoustic values, from a window (20 ms by default) centered on time `t`.
 
     In addition to reporting the spectral moments (COG, SD, skew, and kurtosis) of the multitaper spectrum (from `compute_mt_sgram()`, using DPSS tapers from `scipy.signal.windows.dpss()`), `fricative()` finds the "main peak" in the fricative spectrum.  For fricatives with a resonant cavity, this is the lowest resonance of the cavity.  
     For those with no resonance the main peak frequency may be more a property of the source function.
      
-    The main peak heuristic is to start by looking the in the spectrum above 300 Hz, for the lowest frequency peak that is at least 50% of the amplitude range, separated from the nearest peak by at least 500Hz, and prominent by 8bB above the next nearest peak (see the **scipy.signal.find_peaks()** documentation).  If no peak is found, relax the prominence constraint, then the amplitude constraint, and then both. 
+    The main peak heuristic is to start by looking the in the spectrum above `min_freq`, for the lowest frequency peak that is at least 50% of the amplitude range, separated from the nearest peak by at least 500Hz, and prominent by 8bB above the next nearest peak (see the **scipy.signal.find_peaks()** documentation).  If no peak is found, relax the prominence constraint, then the amplitude constraint, and then both. 
 
 Parameters
 ==========
@@ -147,6 +158,12 @@ Parameters
         the time-bandwidth product of the multitaper analysis.  The bandwidth (smoothness) of the spectrum is 2*NW/`w` Hz (400 Hz with the defaults), and about 2*NW-1 tapers are averaged to stabilize the estimate.  To keep the same smoothness when `w` is changed, scale `NW` in proportion to `w`.
     order : integer or None, default = 12
         determines the number of points in the FFT of the spectrum (2**`order` points, at least as many as in the window).  The value, `None`, uses no zero padding, so the spectrum has a point every 1/`w` Hz (50 Hz with the default window).  A larger value, such as 12, gives a spectrum with finer frequency spacing (for peak finding), but no more frequency resolution.
+    scale : string, default = 'psd'
+        If 'psd', the spectrogram is a power spectral density (power per Hz). If 'nitime', it has the scaling of `nitime.algorithms.multi_taper_psd()` with its default `Fs`, which differs from 'psd' by a constant factor of 2*pi/fs.
+    min_freq : int, default = 300
+        Minimum frequency (in Hz) to use in the analysis.
+    dB_moments : boolean, deault = True
+        If True, uses dB-scaled values to calculate spectral moments. Values transformed back to the power scale otherwise.
 
 
 Returns
@@ -156,17 +173,25 @@ namedtuple :
     A `FricMeas` namedtuple of fricative measures is returned, with the following fields:
 
         Fm : float
-            Frequency (in Hz) of the first main spectral peak.  A measure correlated with the length of the front tube.
+            Frequency (in Hz) of the first main spectral peak. A measure correlated with the length of the front tube.
         Am : float
             Amplitude (in dB) at Fm
+        Fmin : float
+            The frequency of amplitude minimum between `min_freq` and Fm
+        Amin : float
+            Amplitude (in dB) at Fmin
         AmpD : float
-            The difference in amplitude (dB) between the higher of Am or Asec and the minimum amplitude between 500Hz and Fm.  A measure of sibilance.
+            The difference in amplitude (dB) between the higher of Am or Asec and Amin.  A measure of sibilance.
         Fsec : float 
             Frequency of the second major peak in the spectrum.  If the front tube is long there can be a second resonance. If there is no second major peak, this field's value is `None`
         Asec: float
             Amplitude (in dB) at Fsec. If there is no second major peak, this field's value is `None`
         mode : string
             a report on the peak finding parameters used
+        Fpeak : float
+            Frequency (in Hz) of the highest spectral peak.
+        Apeak : float
+            Amplitude (in dB) at Fpeak.
         COG : float
             center of gravity, the first moment of the spectrum.
         SD : float
@@ -238,11 +263,11 @@ The figure here shows major peaks and COG in several different fricatives.
     
     # one multitaper spectrum, by default with no zero padding (order=None), as in the nitime-based version.
     # scale='nitime' keeps the dB levels the same as in that version.
-    _, freq, sgram = compute_mt_sgram(chunk, fs, w=len(chunk)/fs, s=winsize, NW=NW, order=order, scale='nitime')
+    _, freq, sgram = compute_mt_sgram(chunk, fs, w=len(chunk)/fs, s=winsize, NW=NW, order=order, scale=scale)
     spec = sgram[:, 0]       # multi-taper spectrum (dB)
     fspace = (fs/2)/len(freq)  # frequency spacing in spectrum - map from frequency to array index
     
-    return _measure(spec, freq, fspace)
+    return _measure(spec, freq, fspace, min_freq, dB_moments)
 
 
 def tandem_fric(x,fs,t,w=0.02,NW=4,total=0.04,step=0.002):
