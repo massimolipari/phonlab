@@ -53,7 +53,7 @@ def bark2hz(bark):
 
 FricMeas = namedtuple('FricMeas', [
     'Fm', 'Am', 'Fmin', 'Amin', 'AmpD', 'Fsec', 'Asec', 'mode',
-    'COG', 'SD', 'Skew', 'Kurtosis', 'spec', 'freq'
+    'Fpeak', 'Apeak', 'COG', 'SD', 'Skew', 'Kurtosis', 'spec', 'freq'
 ])
 
 def _measure(spec, freq, fspace, min_freq=300, dB_moments=True):
@@ -108,8 +108,9 @@ def _measure(spec, freq, fspace, min_freq=300, dB_moments=True):
     Apeak = spec[index_of_overall_peak]
 
     # -------- moments analysis -----------------------
-    if dB_moments is False:
-        spec = 10 ** (spec/10) # convert back to PSD
+    spec_original = spec.copy()
+    if not dB_moments:
+        spec = 10 ** (spec/10) # convert back to PSD, per Forrest et al. (1989)
 
     bottom_freq = int(min_freq/fspace)
     top_freq = int(11000/fspace)  # set frequency range for the moments analysis -- 11kHz,
@@ -130,7 +131,7 @@ def _measure(spec, freq, fspace, min_freq=300, dB_moments=True):
     
     return FricMeas(
         Fm=Fm, Am=Am, Fmin=Fmin, Amin=Amin, AmpD=AmpD, Fsec=Fsec, Asec=Asec, mode=mode,
-        Fpeak=Fpeak, Apeak=Apeak, COG=COG, SD=SD, Skew=Skew, Kurtosis=Kurtosis, spec=spec, freq=freq
+        Fpeak=Fpeak, Apeak=Apeak, COG=COG, SD=SD, Skew=Skew, Kurtosis=Kurtosis, spec=spec_original, freq=freq
     )
 
 
